@@ -52,3 +52,20 @@ Automates batch processing of large reaction datasets using `rxn_info_cli.py`. F
 Generates **reaction templates** from sanitized atom-mapped reactions. These templates capture the core chemical transformation pattern of reactions and are used in in-silico transformation modeling.
 
 ---
+### 6. `substructure_generation.py`
+
+Identifies and extracts **SMARTS substructures** of transformation sites:
+- Detects atoms altered during the reaction
+- Includes neighboring atoms for context
+- Requires atom-mapped reactions as input
+
+---
+
+### 7. `biotransformation.py`
+
+Simulates **in-silico biotransformations** of a query compound (input as SMILES):
+- Matches reactive substructures using SMARTS
+- Applies corresponding transformation templates
+- Computes **ADME-Tox** properties for each transformation product
+
+---
