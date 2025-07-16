@@ -11,7 +11,7 @@ Compiles chemical/biochemical reactions catalogued in PubChem from various sourc
 
 ## 2. rxn_equ_format_conversion.py
 
-Converts reaction CIDs into multiple chemical formats:
+Converts reaction CIDs into multiple reaction equation formats:
 
     SMILES
     Text
