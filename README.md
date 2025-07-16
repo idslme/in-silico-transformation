@@ -2,10 +2,10 @@
 
 ## 1. pubchem_rxns_compilation.py
 Compiles chemical/biochemical reactions catalogued in PubChem from various sources.
-    Generates unique reaction identifier
-    aggregates reaction information
-    removes incomplete entries
-    prepares the data for downstream processing
+  Generates unique reaction identifier
+  aggregates reaction information
+  removes incomplete entries
+  prepares the data for downstream processing
 
 ## 2. rxn_equ_format_conversion.py
 
