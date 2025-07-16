@@ -1,15 +1,17 @@
 # In-Silico Transformation Analysis (ISTA) Workflow
 
 ## 1. pubchem_rxns_compilation.py
+
 Compiles chemical/biochemical reactions catalogued in PubChem from various sources.
-  Generates unique reaction identifier
-  aggregates reaction information
-  removes incomplete entries
-  prepares the data for downstream processing
+
+	Generates unique reaction identifier
+	aggregates reaction information
+	removes incomplete entries
+	prepares the data for downstream processing
 
 ## 2. rxn_equ_format_conversion.py
 
-Converts reaction CIDs into multiple reaction eqaution formats:
+Converts reaction CIDs into multiple chemical formats:
 
     SMILES
     Text
@@ -54,4 +56,18 @@ Simulates in-silico biotransformations of a query compound (input as SMILES):
     Matches reactive substructures using SMARTS
     Applies corresponding transformation templates
     Computes ADME-Tox properties for each transformation product
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
 
