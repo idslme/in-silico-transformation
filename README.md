@@ -1,7 +1,6 @@
 # In-Silico Transformation Analysis (ISTA) Workflow
 
 ## 1. pubchem_rxns_compilation.py
-
 Compiles chemical/biochemical reactions catalogued in PubChem from various sources.
     Generates unique reaction identifier
     aggregates reaction information
