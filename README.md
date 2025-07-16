@@ -1,7 +1,6 @@
-# 🧬 In-Silico Transformation Analysis (ISTA) Workflow
+# In-Silico Transformation Analysis (ISTA) Workflow
 
-This repository provides a comprehensive pipeline for analyzing, processing, and simulating chemical and biochemical reactions using cheminformatics tools. The workflow supports reaction data compilation, transformation modeling, and ADME-Tox evaluation.
-
+This repository provides a comprehensive pipeline for reaction data compilation, preprocessing, transformation modeling, and ADME-Tox evaluation of compounds.
 ---
 
 ## 📁 Contents
