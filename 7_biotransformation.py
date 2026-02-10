@@ -1,7 +1,8 @@
 import logging
 import os
+import time
 from typing import List, Dict, Any, Optional
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from rdkit import Chem
 from rdkit.Chem import rdChemReactions
 from rdkit import DataStructs 
@@ -12,7 +13,7 @@ import pubchempy as pcp
 from admet_ai import ADMETModel
 
 
-log_file = "/home/mani/pubchem_rxns_2025_processing/transformation_products_generation/transformation_log_file.log"
+log_file = "/home/mani/caffeine_trans_products/transformation_log_file.log"
 os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
 logging.basicConfig(
@@ -305,7 +306,7 @@ def generate_transformation_products_parallel(merged_info: pd.DataFrame, max_wor
     reaction_rows: List[Dict[str, Any]] = merged_info.to_dict(orient="records")
 
     logger.info(f"Starting parallel product generation with {max_workers} workers...")
-    with ProcessPoolExecutor(max_workers=16) as executor:
+    with ThreadPoolExecutor(max_workers=16) as executor:
         futures = [executor.submit(generate_transformation_product, trans_info) for trans_info in reaction_rows]
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing reactions"):
@@ -344,24 +345,95 @@ def get_canonical_smiles(smiles: str):
     canonical_smiles = Chem.MolToSmiles(mol, canonical=True, allHsExplicit=False)
     return canonical_smiles
 
+
+def get_cid_from_smiles_with_retry(
+    smiles: str,
+    max_retries: int = 5,
+    initial_delay: float = 1.0,
+    cache: Optional[Dict[str, Optional[str]]] = None
+) -> Optional[str]:
+    """
+    Retrieve PubChem CID for a SMILES string with retry logic and exponential backoff.
+    
+    Args:
+        smiles (str): The SMILES string to look up.
+        max_retries (int): Maximum number of retry attempts.
+        initial_delay (float): Initial delay in seconds between retries.
+    
+    Returns:
+        Optional[str]: The CID as a string, or None if the lookup fails.
+    """
+    if smiles is None:
+        return None
+    if cache is not None and smiles in cache:
+        return cache[smiles]
+    
+    delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            compounds = pcp.get_compounds(smiles, 'smiles')
+            if compounds:
+                cid = str(compounds[0].cid)
+                if cache is not None:
+                    cache[smiles] = cid
+                return cid
+            else:
+                logger.warning(f"No compound found for SMILES: {smiles}")
+                if cache is not None:
+                    cache[smiles] = None
+                return None
+        except pcp.PubChemHTTPError as e:
+            if 'ServerBusy' in str(e) or 'PUGREST.ServerBusy' in str(e):
+                if attempt < max_retries - 1:
+                    logger.warning(f"PubChem server busy for SMILES {smiles}. Retrying in {delay:.1f}s (attempt {attempt + 1}/{max_retries})...")
+                    time.sleep(delay)
+                    delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"PubChem server busy after {max_retries} attempts for SMILES: {smiles}")
+                    if cache is not None:
+                        cache[smiles] = None
+                    return None
+            else:
+                logger.error(f"PubChem HTTP error for SMILES {smiles}: {e}")
+                if cache is not None:
+                    cache[smiles] = None
+                return None
+        except IndexError:
+            logger.warning(f"No compounds found for SMILES: {smiles}")
+            if cache is not None:
+                cache[smiles] = None
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error getting CID for SMILES {smiles}: {e}")
+            if cache is not None:
+                cache[smiles] = None
+            return None
+    
+    return None
+
+
 if __name__ == "__main__":
 
     try:
-        sub_struc_lib = pd.read_csv('/home/mani/pubchem_rxns_2025_processing/transformed_atom_substructure.csv')
-        info_df = pd.read_csv('/home/mani/pubchem_rxns_2025_processing/combined_info_28may_with_templates.csv')
-        insecticides = pd.read_csv('/home/mani/PubChem-TOC-Pesticides-Insecticides-KEGG.csv')
-        query_compounds = insecticides['SMILES'].dropna().tolist()
+        sub_struc_lib = pd.read_csv('/home/mani/missing_reaction_processing/transformed_atom_substructure.csv')
+        info_df = pd.read_csv('/home/mani/missing_reaction_processing/combined_info_with_templates.csv')
+        
+        pubchem_toc= pd.read_csv('/home/mani/PubChem-TOC-Pesticides-Insecticides-KEGG.csv')
+        query_compounds = pubchem_toc['SMILES'].to_list()
+
+        
     except FileNotFoundError as e:
         logger.error(f"File not found: {e}")
         exit()
 
-    results_dir = "/home/mani/pubchem_rxns_2025_processing/transformation_products_generation"
+    results_dir = "/home/mani/missing_reaction_processing/transformation_product_generation"
     os.makedirs(results_dir, exist_ok=True)
     
     rxn_mapper = RXNMapper()
     model = ADMETModel()
+    cid_cache: Dict[str, Optional[str]] = {}
 
-    for index, query_compound in enumerate(query_compounds):
+    for index, query_compound in enumerate(tqdm(query_compounds, desc="Query compounds")):
 
         logger.info(f"Processing query compound {index + 1}/{len(query_compounds)}: {query_compound}")
 
@@ -381,6 +453,10 @@ if __name__ == "__main__":
         merged_info.drop(columns=['RXN_ID'], inplace=True)
 
         result = pd.DataFrame(generate_transformation_products_parallel(merged_info, max_workers=16))
+        
+        if result.empty:
+            logger.warning(f"No transformation products generated for query compound {index + 1}. Skipping.")
+            continue
 
         result['mapped_rxn_query_cmpd'] = result.apply(
             lambda row: _get_mapped_reaction(row['rxn_smiles_with_query_cmpd'], row['rxn_id']),
@@ -396,8 +472,20 @@ if __name__ == "__main__":
         
         result['rank_1_product_canonical_smiles'] = rank_1_products.apply(lambda x: get_canonical_smiles(x))
  
-        smiles_series = pd.Series(list(set(result['rank_1_product_canonical_smiles'])), name='smiles')
-        smiles_to_cid_df = smiles_series.apply(lambda smi: pd.Series({'smiles':smi, 'cid':str(pcp.get_compounds(smi, 'smiles')[0].cid)}))
+        # Get unique SMILES for CID fetching (to avoid redundant API calls)
+        unique_smiles = result['rank_1_product_canonical_smiles'].dropna().unique()
+        
+        # Retrieve CIDs with retry logic and rate limiting
+        logger.info(f"Fetching CIDs for {len(unique_smiles)} unique SMILES...")
+        cid_data = []
+        for idx, smi in enumerate(unique_smiles):
+            cid = get_cid_from_smiles_with_retry(smi, cache=cid_cache)
+            cid_data.append({'smiles': smi, 'cid': cid})
+            # Add a small delay between requests to avoid overwhelming the server
+            if idx < len(unique_smiles) - 1:
+                time.sleep(0.3)  # 300ms delay between requests
+        
+        smiles_to_cid_df = pd.DataFrame(cid_data)
              
         # Merge with your result DataFrame
         result = result.merge(
@@ -412,8 +500,18 @@ if __name__ == "__main__":
         
         result.to_csv(os.path.join(subdir, f'query_compound_{index + 1}_transformation_products.csv'), index=False)
 
-        adme_prop = smiles_series.apply(lambda smi: {**model.predict(smi), 'smiles': smi})
-        adme_prop_df = pd.DataFrame(adme_prop.tolist())
+        # For ADME properties, use only unique SMILES from smiles_to_cid_df
+        unique_product_smiles = smiles_to_cid_df['smiles'].dropna().tolist()
+        adme_prop = []
+        for smi in unique_product_smiles:
+            try:
+                pred = model.predict(smi)
+                pred['smiles'] = smi
+                adme_prop.append(pred)
+            except Exception as e:
+                logger.error(f"Error predicting ADME properties for SMILES {smi}: {e}")
+        
+        adme_prop_df = pd.DataFrame(adme_prop)
         adme_prop_df['Parent Compound/Product'] = 'Product'
         adme_prop_query = pd.DataFrame([{**model.predict(query_compound), 'smiles': query_compound, 'Parent Compound/Product': 'Parent Compound'}])
         
@@ -428,4 +526,282 @@ if __name__ == "__main__":
             os.path.join(subdir, f'adme_properties_query_compound_{index + 1}.csv'),
             index=False
         )
+
+
+
+
+
+############### Thermodynamic stability ##################################
+from thermo import Joback
+import rdkit
+from rdkit import Chem
+
+def compute_gibbs_free_energy(smiles: str, temp_k: float = 298.15):
+    """
+    Calculate thermodynamic properties from SMILES using Joback group contribution method.
+    
+    Args:
+        smiles: SMILES string of the molecule
+        temp_k: Temperature in Kelvin (default: 298.15 K)
+    
+    Returns:
+        Tuple of (enthalpy, entropy, gibbs_free_energy) in kJ/mol, kJ/(mol·K), kJ/mol
+        Returns (None, None, None) if invalid SMILES
+    """
+    if smiles is None or str(smiles).strip() == '':
+        return 'Invalid SMILES'    
+   
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return 'Failed To Generate Rdkit Mol Object From Smiles'
+    
+    try:
+        data = Joback(mol)
+        result= data.estimate()
+        # 1. Get Enthalpy (Hf) in kJ/mol
+        enthalpy = result['Hf'] / 1000  # Convert J to kJ
+        # 2. Get Gibbs free energy (Gf) in kJ/mol  
+        gibbs_free_energy = result['Gf'] / 1000  # Convert J to kJ
+        # 3. Derive Entropy (S) from relationship: G = H - TS
+        # Rearranging: S = (H - G) / T
+        entropy = (enthalpy - gibbs_free_energy) / temp_k  # kJ/(mol·K)
+
+        # 4. Determine Stability Rating
+        if gibbs_free_energy < -100:
+            stability = "Highly Stable"
+        elif gibbs_free_energy < 0:
+            stability = "Stable"
+        else:
+            stability = "Unstable / Highly Reactive"
+
+        return {
+            'Enthalpy': round(enthalpy, 2), 
+            'Entropy': round(entropy, 4), 
+            'Gibbs Free Energy': round(gibbs_free_energy, 2),
+            'Stability': stability
+        }
+        
+    except Exception as e:
+                
+        return {
+            'Enthalpy': None, 
+            'Entropy': None, 
+            'Gibbs Free Energy': None, 
+            'Stability': f'Error: {str(e)}'
+        }
+
+
+target_directory = "/home/mani/missing_reaction_processing/transformation_product_generation"
+table2= pd.read_csv('/home/mani/ista_revision_final/Zenodo_Table_2.csv', low_memory= False)
+
+full_file_paths = [
+    os.path.join(root, name)
+    for root, _, files in os.walk(target_directory)
+    for name in files
+    if "transformation" in name
+]
+
+df_list = [pd.read_csv(p) for p in full_file_paths]
+final_trans_products = pd.concat(df_list, ignore_index=True)
+
+insec_trans_dict = {smiles: group for smiles, group in final_trans_products.groupby('query_smiles')}
+
+gibbs_free_energy_calculation_results = []
+
+for key in insec_trans_dict.keys():
+    df = insec_trans_dict.get(key)
+    gibbs_results = []
+    
+    # Get unique SMILES and compute Gibbs free energy for each
+    for smil in set(df['rank_1_product_canonical_smiles']):
+        try:
+            # Compute Gibbs free energy
+            energy_result = compute_gibbs_free_energy(smil)
+            
+            # Handle different return types from compute_gibbs_free_energy
+            if isinstance(energy_result, dict):
+                gibbs_results.append({'smiles': smil, **energy_result})
+            elif isinstance(energy_result, (int, float)):
+                # If function returns just a number, store it
+                gibbs_results.append({'smiles': smil, 'Gibbs_Free_Energy': energy_result})
+            else:
+                # If unknown type, convert to string and log
+                print(f"Warning: Unexpected return type for {smil}: {type(energy_result)}")
+                gibbs_results.append({'smiles': smil, 'error': str(energy_result)})
+        except Exception as e:
+            # Handle errors gracefully without breaking the loop
+            print(f"Error computing Gibbs free energy for {smil}: {str(e)}")
+            gibbs_results.append({'smiles': smil, 'error': str(e)})
+    
+    # Create DataFrame from results
+    if gibbs_results:
+        gibbs_df = pd.DataFrame(gibbs_results)
+        
+        # Rank by Gibbs Free Energy if column exists
+        if 'Gibbs_Free_Energy' in gibbs_df.columns:
+            gibbs_df['rank'] = gibbs_df['Gibbs_Free_Energy'].rank(ascending=True, method='min')
+        elif 'Gibbs Free Energy' in gibbs_df.columns:
+            gibbs_df['rank'] = gibbs_df['Gibbs Free Energy'].rank(ascending=True, method='min')
+        
+        gibbs_df['query_smiles'] = key  # Add query SMILES for reference
+        gibbs_free_energy_calculation_results.append(gibbs_df)
+    else:
+        print(f"No results for query SMILES: {key}")
+
+
+gibbs_free_energy_results = pd.concat(gibbs_free_energy_calculation_results).drop(columns=['Stability'], errors='ignore')
+
+merged_gibbs_trans = final_trans_products.merge(
+    gibbs_free_energy_results,
+    left_on='rank_1_product_canonical_smiles',
+    right_on='smiles',
+    how='left'    
+).drop(columns= ['smiles', 'query_smiles_y', 'error'])
+
+# Map REACTION_STATUS and TAX_ID from final_combined_rxns
+merged_gibbs_trans = merged_gibbs_trans.merge(
+    table2[['RXN_ID', 'ECS', 'TAX_ID', 'REACTION_STATUS']],
+    left_on='rxn_id',
+    right_on='RXN_ID',
+    how='left'
+).drop(columns=['RXN_ID'])
+
+merged_gibbs_trans.to_csv('/home/mani/ista_revision_final/Zenodo_Table5.csv', index= False)
+
+
+######## Zenodo Table 6 ###########################################
+
+target_directory = "/home/mani/missing_reaction_processing/transformation_product_generation"
+
+full_file_paths = [
+    os.path.join(root, name)
+    for root, _, files in os.walk(target_directory)
+    for name in files
+    if "adme_properties" in name
+]
+
+df_list = [pd.read_csv(p) for p in full_file_paths]
+combined_adme= pd.concat(df_list).reset_index(drop= True)
+
+parent_cmpd_index = list(combined_adme[combined_adme['Parent Compound/Product'] == 'Parent Compound'].index)
+
+splitted_df = []
+for index, value in enumerate(parent_cmpd_index):
+  start_index = value
+  if index < len(parent_cmpd_index) - 1:
+    end_index = parent_cmpd_index[index + 1]
+  else:
+    end_index = len(combined_adme)
+  df_subset = combined_adme.iloc[start_index:end_index].copy()
+  splitted_df.append(df_subset)
+
+top_rank_computed_dfs= []
+for df in splitted_df:
+    percentiles = df.filter(like='_drugbank_approved_percentile')
+    top_1_mask = percentiles >= 95
+    df['top_1_percentile_count'] = top_1_mask.sum(axis=1)
+    top_rank_computed_dfs.append(df)
+
+
+final_adme_table= pd.concat(top_rank_computed_dfs, ignore_index=True)
+final_adme_table.to_csv('/home/mani/ista_revision_final/Zenodo_Table6.csv', index= False)
+
+
+############# SI Table 3 Generation ###################################
+import re
+import pandas as pd
+
+table2= pd.read_csv('/home/mani/ista_revision_final/Zenodo_Table_2.csv', low_memory= False)
+trans_prducts= pd.read_csv('/home/mani/ista_revision_final/Zenodo_Table5.csv', low_memory= False)
+adme_table= pd.read_csv('/home/mani/ista_revision_final/Zenodo_Table6.csv', low_memory= False)
+pubchem_toc = pd.read_csv('/home/mani/PubChem-TOC-Pesticides-Insecticides-KEGG.csv')
+
+query_cids_unique= list(set(adme_table['query_cid']))
+
+splitted_df= []
+summary_rows = []
+
+for cid in query_cids_unique:
+    df= adme_table[adme_table['query_cid'] == cid]
+    splitted_df.append(df)
+    
+for df in splitted_df:
+    query_cid= list(set(df['query_cid']))[0]
+    target_cids = []
+    for _cid in df['cid'].dropna():
+        try:
+            target_cids.append(int(float(_cid)))
+        except (ValueError, TypeError):
+            continue
+    target_cids = list(set(target_cids))
+    no_of_trabsformation_products= len(list(set(df['smiles'])))
+    
+    target_compound_rxn_id_list= []
+    cids_associted_with_any_reaction= []
+    cids_not_associated_with_any_reaction= []
+    for tar_cid in target_cids:
+        if pd.isna(tar_cid):
+            continue
+        target_cid_str = str(tar_cid).strip()
+        if not target_cid_str:
+            continue
+        token_pattern = rf'(^|\||>>)\s*{re.escape(target_cid_str)}\s*($|\||>>)'
+        table2_exact = table2[table2['RXN_ID'].astype(str).str.contains(token_pattern, na=False, regex=True)]
+        reaction_id_list = table2_exact['RXN_ID'].tolist()
+        if reaction_id_list:
+            cids_associted_with_any_reaction.append(tar_cid)
+        else:
+            cids_not_associated_with_any_reaction.append(tar_cid)
+        target_compound_rxn_id_list.extend(reaction_id_list)
+
+    target_compound_rxn_id_list = sorted(set(target_compound_rxn_id_list))
+
+    query_compound_rxn_id_list = []
+   
+    query_cid_str = str(query_cid).strip()
+    
+    if not query_cid_str:
+        continue
+    token_pattern = rf'(^|\||>>)\s*{re.escape(query_cid_str)}\s*($|\||>>)'
+    table2_exact = table2[table2['RXN_ID'].astype(str).str.contains(token_pattern, na=False, regex=True)]
+    reaction_id_list = table2_exact['RXN_ID'].tolist()
+    query_compound_rxn_id_list.extend(reaction_id_list)
+
+    query_compound_rxn_id_list = sorted(set(query_compound_rxn_id_list))
+
+    overlapping_reaction_id = sorted(set(query_compound_rxn_id_list).intersection(target_compound_rxn_id_list))
+
+    compound_match = pubchem_toc[pubchem_toc['Compound CID'] == query_cid]
+    compound_name = compound_match['Name'].iloc[0] if not compound_match.empty else None
+    compound_class = compound_match['Compound Class'].iloc[0] if not compound_match.empty else None
+
+
+    summary_rows.append({
+        'Compound Name': compound_name,
+        'Query CIDs': query_cid,
+        'No of Transformation Product Metabolites Enlisted in Pubchem': len(target_cids),
+        'Transformation Product CIDs': target_cids,
+        'CIDs Associated with Any Reaction PubChem': cids_associted_with_any_reaction,
+        'CIDs Not Associated With Any Reaction PubChem': cids_not_associated_with_any_reaction,
+        'Overlapping Reaction ID Between Query CID and Transformation Product': overlapping_reaction_id,
+        'Overlapping Reaction Count Between Query CID and Transformation Product': len(overlapping_reaction_id),
+        'Compound Class': compound_class,
+    })
+
+summary_df = pd.DataFrame(summary_rows)
+
+summary_df['No of Unique Transformation Product Not Enlisted in PubChem'] = (
+    summary_df['No of Unique Transformation Products']
+    - summary_df['No of Transformation Product Metabolites Enlisted in Pubchem']
+)
+
+summary_df.to_csv('/home/mani/ista_revision_final/tables3.csv', index= False)
+
+############# SI Table 4 Generation ###################################
+
+adme_table_2 = final_adme_table.loc[:, ~adme_table.columns.str.contains('_drugbank_approved_percentile', na=False)]
+adme_table_3 = adme_table_2[adme_table_2['Parent Compound/Product'] != 'Parent Compound'].reset_index(drop=True)
+adme_4= adme_table_3.loc[:, 'molecular_weight': 'VDss_Lombardo']
+adme_4_stats = adme_4.describe()
+adme_4_stats.to_csv('/home/mani/ista_revision_final/tableS4.csv', index= False)
         

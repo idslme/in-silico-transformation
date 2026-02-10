@@ -167,6 +167,6 @@ def process_reactions_in_parallel(input_file_path: str, output_file_path: str, m
 
 if __name__ == "__main__":
     
-    input_file_path = '/home/mani/pubchem_rxns_2025_processing/combined_info_15may.csv'
-    output_file_path =  '/home/mani/pubchem_rxns_2025_processing/transformed_atom_substructure.csv'
+    input_file_path = '/home/mani/missing_reaction_processing/combined_info_with_templates.csv'
+    output_file_path =  '/home/mani/missing_reaction_processing/transformed_atom_substructure.csv'
     process_reactions_in_parallel(input_file_path, output_file_path, max_workers=16)

@@ -81,15 +81,15 @@ def get_transformation_template_parallel(df, rxn_col='SANITIZED_MAPPED_REACTION'
 
 if __name__ == "__main__":
     
-    input_file_path = '/home/mani/pubchem_rxns_2025_processing/combined_info_15may_with_templates.csv'
+    input_file_path = '/home/mani/missing_reaction_processing/combined_info_with_templates.csv'
     configure_logging(input_file_path) 
     
-    info_df = pd.read_csv('/home/mani/pubchem_rxns_2025_processing/combined_info_15may_with_templates.csv')
+    info_df = pd.read_csv('/home/mani/missing_reaction_processing/rxn_info_combined.csv')
     reaction_template = get_transformation_template_parallel(info_df, rxn_col='SANITIZED_MAPPED_REACTION', id_col='RXN_ID', n_workers=16)
     
     rxn_temp_nan_removed = [mem for mem in reaction_template if isinstance(mem, dict)]
     reaction_template_forward = pd.DataFrame(rxn_temp_nan_removed)
-    reaction_template_forward.to_csv('/home/mani/pubchem_rxns_2025_processing/reaction_template_forward.csv', index=False)
+    reaction_template_forward.to_csv('/home/mani/missing_reaction_processing/reaction_template_forward.csv', index=False)
     
     info_df.drop(columns=['reac_temp'], inplace=True, errors='ignore')
 
@@ -106,5 +106,4 @@ if __name__ == "__main__":
     
     merged_df.rename(columns={'reaction_smarts': 'reac_temp'}, inplace=True)
     merged_df.drop(columns=['reaction_id'], inplace=True, axis=1)
-    merged_df.to_csv('/home/mani/pubchem_rxns_2025_processing/combined_info_28may_with_templates.csv', index=False)
-
+    merged_df.to_csv('/home/mani/missing_reaction_processing/combined_info_with_templates.csv', index=False)
