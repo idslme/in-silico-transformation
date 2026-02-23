@@ -98,6 +98,9 @@ Each major step is implemented as a standalone script. Run the scripts sequentia
 
 ---
 
+## Google Colab Notebook
+https://colab.research.google.com/drive/1V9ZeRbt843xegnN9jIIB0VHw5-i9Ef2c?usp=sharing
+
 ## Notes
 
 - Adjust file names/paths and arguments to match your data and workflow.
